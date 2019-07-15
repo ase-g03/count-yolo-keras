@@ -18,6 +18,8 @@ from yolo3.utils import letterbox_image
 import os
 from keras.utils import multi_gpu_model
 
+from counter import Counter
+
 class YOLO(object):
     _defaults = {
         "model_path": 'model_data/yolo.h5',
@@ -27,6 +29,7 @@ class YOLO(object):
         "iou" : 0.45,
         "model_image_size" : (416, 416),
         "gpu_num" : 1,
+        "resize_ratio" : 1.0
     }
 
     @classmethod
@@ -101,7 +104,7 @@ class YOLO(object):
         return boxes, scores, classes
 
     def detect_image(self, image):
-        start = timer()
+        # start = timer()
 
         if self.model_image_size != (None, None):
             assert self.model_image_size[0]%32 == 0, 'Multiples of 32 required'
@@ -125,18 +128,30 @@ class YOLO(object):
                 K.learning_phase(): 0
             })
 
-        print('Found {} boxes for {}'.format(len(out_boxes), 'img'))
+        return out_boxes, out_scores, out_classes
+
+    def draw_boxes(self, image, out_boxes, out_label_idxs, out_scores, out_classes, out_colors):
+        # print('Found {} boxes for {}'.format(len(out_boxes), 'img'))
 
         font = ImageFont.truetype(font='font/FiraMono-Medium.otf',
                     size=np.floor(3e-2 * image.size[1] + 0.5).astype('int32'))
         thickness = (image.size[0] + image.size[1]) // 300
 
+        draw = ImageDraw.Draw(image)
+        draw.line((round(image.size[0] * 0.25), 0, round(image.size[0] * 0.25), image.size[1]), fill=(255, 255, 255), width=2)
+        draw.line((round(image.size[0] * 0.4), 0, round(image.size[0] * 0.4), image.size[1]), fill=(255, 255, 255), width=2)
+        draw.line((round(image.size[0] * 0.6), 0, round(image.size[0] * 0.6), image.size[1]), fill=(255, 255, 255), width=2)
+        draw.line((round(image.size[0] * 0.75), 0, round(image.size[0] * 0.75), image.size[1]), fill=(255, 255, 255), width=2)
+        del draw
+
         for i, c in reversed(list(enumerate(out_classes))):
             predicted_class = self.class_names[c]
             box = out_boxes[i]
+            label_idx = out_label_idxs[i]
             score = out_scores[i]
+            color = out_colors[i]
 
-            label = '{} {:.2f}'.format(predicted_class, score)
+            label = '{}[{}] {:.2f}'.format(predicted_class, label_idx, score)
             draw = ImageDraw.Draw(image)
             label_size = draw.textsize(label, font)
 
@@ -145,7 +160,9 @@ class YOLO(object):
             left = max(0, np.floor(left + 0.5).astype('int32'))
             bottom = min(image.size[1], np.floor(bottom + 0.5).astype('int32'))
             right = min(image.size[0], np.floor(right + 0.5).astype('int32'))
-            print(label, (left, top), (right, bottom))
+            center_x = int((right - left) / 2 + left)
+            center_y = int((bottom - top) / 2 + top)
+            # print(label, (left, top), (right, bottom))
 
             if top - label_size[1] >= 0:
                 text_origin = np.array([left, top - label_size[1]])
@@ -156,19 +173,54 @@ class YOLO(object):
             for i in range(thickness):
                 draw.rectangle(
                     [left + i, top + i, right - i, bottom - i],
-                    outline=self.colors[c])
+                    outline=color)
+                    # outline=self.colors[c])
+            r = 2
+            draw.ellipse((center_x - r, center_y - r, center_x + r, center_y + r), fill=color)
             draw.rectangle(
                 [tuple(text_origin), tuple(text_origin + label_size)],
-                fill=self.colors[c])
+                fill=color)
+                # fill=self.colors[c])
             draw.text(text_origin, label, fill=(0, 0, 0), font=font)
             del draw
 
-        end = timer()
-        print(end - start)
+        # end = timer()
+        # print(end - start)
         return image
 
     def close_session(self):
         self.sess.close()
+
+def pileUp(img, img2):
+    def pixelGetter(img):
+        size = img.size
+
+        img_pixels = []
+        for x in range(size[0]):
+            for y in range(size[1]):
+                img_pixels.append(img.getpixel((x,y)))
+
+        return img_pixels
+
+    size = img.size
+    size2 = img2.size
+
+    pic1 = pixelGetter(img)
+    pic2 = pixelGetter(img2)
+
+    new_img = Image.new("RGBA", size)
+
+    i = 0
+    for x in range(size[0]):
+        for y in range(size[1]):
+            r = pic1[i][0] + pic2[i][0]
+            g = pic1[i][1] + pic2[i][1]
+            b = pic1[i][2] + pic2[i][2]
+
+            new_img.putpixel((x, y), (r, g, b, 255))
+            i += 1
+
+    return new_img
 
 def detect_video(yolo, video_path, output_path=""):
     import cv2
@@ -177,24 +229,35 @@ def detect_video(yolo, video_path, output_path=""):
         raise IOError("Couldn't open webcam or video")
     video_FourCC    = int(vid.get(cv2.CAP_PROP_FOURCC))
     video_fps       = vid.get(cv2.CAP_PROP_FPS)
-    video_size      = (int(vid.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    video_size      = (int(vid.get(cv2.CAP_PROP_FRAME_WIDTH) * yolo.resize_ratio),
+                       int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT) * yolo.resize_ratio))
+
+    counter = Counter(video_size, yolo.class_names, yolo.resize_ratio)
+
     isOutput = True if output_path != "" else False
     if isOutput:
         print("!!! TYPE:", type(output_path), type(video_FourCC), type(video_fps), type(video_size))
         out = cv2.VideoWriter(output_path, video_FourCC, video_fps, video_size)
+    '''
     accum_time = 0
     curr_fps = 0
     fps = "FPS: ??"
     prev_time = timer()
+    '''
+
     while True:
         return_value, frame = vid.read()
 
         if frame is None: break
 
+        frame = cv2.resize(frame, dsize=video_size)
+
         image = Image.fromarray(frame)
-        image = yolo.detect_image(image)
+        out_boxes, out_scores, out_classes = yolo.detect_image(image)
+        out_boxes, out_label_idxs, out_scores, out_classes, out_colors = counter.process_on_frame(image, out_boxes, out_scores, out_classes)
+        image = yolo.draw_boxes(image, out_boxes, out_label_idxs, out_scores, out_classes, out_colors)
         result = np.asarray(image)
+        '''
         curr_time = timer()
         exec_time = curr_time - prev_time
         prev_time = curr_time
@@ -206,6 +269,7 @@ def detect_video(yolo, video_path, output_path=""):
             curr_fps = 0
         cv2.putText(result, text=fps, org=(3, 15), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                     fontScale=0.50, color=(255, 0, 0), thickness=2)
+        '''
         cv2.namedWindow("result", cv2.WINDOW_NORMAL)
         cv2.imshow("result", result)
         if isOutput:

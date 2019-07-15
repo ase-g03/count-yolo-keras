@@ -40,6 +40,11 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
+        '--resize_ratio', type=float,
+        help='Resize ratio of image, default ' + str(YOLO.get_defaults("resize_ratio"))
+    )
+
+    parser.add_argument(
         '--gpu_num', type=int,
         help='Number of GPU to use, default ' + str(YOLO.get_defaults("gpu_num"))
     )
